@@ -27,28 +27,40 @@ import java.io.InputStream
 import java.security.KeyStore
 import javax.net.ssl.{KeyManagerFactory, SSLContext}
 
-import com.twitter.finagle.netty3.Netty3TransporterTLSConfig
-import com.twitter.finagle.ssl.Engine
-
 val pathToP12 = "/path/to/a/p12"
 val keyPassword = "my$3cr3t"
 
-def newNetty3TransporterTLSConfig(hostnameToVerify: Option[String]) = {
-    val inputStream = new FileInputStream(new File(pathToP12))
+val pathToTrustStore = "/path/to/certs.jks"
+val trustStorePassword = "some-password-probably-changeit"
+
+def sslContext = {
+    // load the P12 from disk and decrypt it into a KeyStore
+    val keyStoreInputStream = new FileInputStream(new File(pathToP12))
     val ks = KeyStore.getInstance("PKCS12")
-    ks.load(inputStream, keyPassword.toCharArray)
-    
+    ks.load(keyStoreInputStream, keyPassword.toCharArray)
+   
+    // a KeyManagerFactory takes the KeyStore and can provide an array of KeyManagers
     val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm)
     kmf.init(ks, keyPassword.toCharArray)
     
-    val serverContext = SSLContext.getInstance("TLS")
-    serverContext.init(kmf.getKeyManagers, null, null)
+    // similarly to the key, we need to load a TrustStore to verify the server certificate
+    val trustStoreInputStream = new FileInputStream(new File(pathToTrustStore))
+    val trustStore = KeyStore.getInstance("JKS")
+    trustStore.load(trustStoreInputStream, trustStorePassword.toCharArray)
     
-    def newFinagleSslEngine = new Engine(serverContext.createSSLEngine())
+    val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm)
+    tmf.init(trustStore)
     
-	new Netty3TransporterTLSConfig(Function.const(finagleSslEngine), hostnameToVerify)
+    // the sslContext needs the array of KeyManagers and TrustManagers
+    val tlsSslContext = SSLContext.getInstance("TLS")
+    tlsSslContext.init(kmf.getKeyManagers, tmf.getTrustManagers, new SecureRandom())
+    tlsSslContext
 }
+
+val client = Http.client
+		.withTransport.tls(sslContext)
+		.newService("some-host-name:8080")
 
 ```
 
-This is not pretty - this is the sort of thing I wish all HTTP libraries would abstract away. Maybe Twitter don't do much TLS authentication over HTTP, but it is boilerplate code and a bit of a pain to test.
+This is not that pretty - it is the sort of thing I wish all HTTP libraries would abstract away (Python requests does, and the Play Framework does a pretty good job too).
